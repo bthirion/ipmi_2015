@@ -74,7 +74,7 @@ class BootstrapLasso(Lasso):
             coefs.append(clf.fit(X_, y_).coef_)
 
         coefs = np.array(coefs)
-        self.coef_ = coefs.mean(0) / coefs.std(0)
+        self.coef_ = coefs.mean(0) / np.maximum(1.e-12, coefs.std(0))
         return self
 
 
@@ -143,9 +143,10 @@ for y in Y.T:
     score_ss.append(accuracy_(support.T[-1], stability_selection(X, y)))
     score_pt.append(accuracy_(support.T[-1], permutation_testing(
                 X, y, n_perm=n_perm, pval=.05)))
-    #score_bpt = np.zeros_like(score_pt)
     score_bpt.append(accuracy_(support.T[-1], bootstrap_permutation_testing(
                 X, y, n_perm=n_perm, pval=.05)))
+
+# score_bpt = np.zeros_like(score_pt)
 
 score_smr, score_ss, score_pt, score_bpt = (
     np.array(score_smr), np.array(score_ss), np.array(score_pt),
