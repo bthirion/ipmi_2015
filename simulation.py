@@ -10,6 +10,7 @@ import numpy as np
 from sklearn.linear_model import Lasso, LassoCV, MultiTaskLassoCV
 from sklearn import metrics
 import matplotlib.pyplot as plt
+from joblib import Parallel, delayed
 
 
 def SMR(X, y):
@@ -137,22 +138,26 @@ support = np.abs(effects) > 0
 noise = np.random.randn(n_samples, n_voxels)
 Y = np.dot(X, effects) + noise
 
-score_smr, score_ss, score_pt, score_bpt = [], [], [], []
-for y in Y.T:
-    score_smr.append(accuracy_(support.T[-1], SMR(X, y)))
-    score_ss.append(accuracy_(support.T[-1], stability_selection(X, y)))
-    score_pt.append(accuracy_(support.T[-1], permutation_testing(
-                X, y, n_perm=n_perm, pval=.05)))
-    score_bpt.append(accuracy_(support.T[-1], bootstrap_permutation_testing(
-                X, y, n_perm=n_perm, pval=.05)))
 
-# score_bpt = np.zeros_like(score_pt)
+def compute_scores(X, y):
+    score_smr = accuracy_(support.T[-1], SMR(X, y))
+    score_ss = accuracy_(support.T[-1], stability_selection(X, y))
+    score_pt = accuracy_(support.T[-1], permutation_testing(
+                X, y, n_perm=n_perm, pval=.05))
+    #score_bpt = accuracy_(support.T[-1], bootstrap_permutation_testing(
+    #            X, y, n_perm=n_perm, pval=.05)
+    score_bpt = (0, 0)
+    return np.concatenate((score_smr, score_ss, score_pt, score_bpt))
 
-score_smr, score_ss, score_pt, score_bpt = (
-    np.array(score_smr), np.array(score_ss), np.array(score_pt),
-    np.array(score_bpt))
+scores = Parallel(n_jobs=1)(
+    delayed(compute_scores)(X, y) for y in Y.T)
 
-scores = np.hstack((score_smr, score_ss, score_pt, score_bpt))
+#score_smr, score_ss, score_pt, score_bpt = (
+#    np.array(score_smr), np.array(score_ss), np.array(score_pt),
+#    np.array(score_bpt))
+#scores = np.hstack((score_smr, score_ss, score_pt, score_bpt))
+scores = np.array(scores)
+
 np.savez('scores.npz', scores=scores)
 
 plt.figure(figsize=(5, 4))
