@@ -65,7 +65,7 @@ def stability_selection(X, y, n_bootstraps=100, pi=.75):
     alpha = .1 * alpha_max
     stability = np.zeros(n_features)
     for b in range(n_bootstraps):
-        X_ = .5 * X * (1 + np.random.rand(n_features) > 0.5)
+        X_ = .5 * X * (1 + (np.random.rand(n_features) > 0.5))
         mask = np.random.rand(n_samples) > 0.5
         X_, y_ = X_[mask], y[mask]
         coef = Lasso(alpha=alpha).fit(X_, y_).coef_
@@ -97,14 +97,14 @@ class BootstrapLasso(Lasso):
             copy_X=self.copy_X, max_iter=self.max_iter, tol=self.tol,
             warm_start=self.warm_start, positive=self.positive,
             random_state=self.random_state, selection=self.selection)
-        coefs = []
-        n_samples = len(y)
+        n_samples, n_features = X.shape
+        coefs = np.empty((n_bootstraps, n_features), np.float)
         for b in range(self.n_bootstraps):
             samples = np.random.randint(0, n_samples, n_samples)
-            y_, X_ = y[samples], X[samples]
-            coefs.append(clf.fit(X_, y_).coef_)
+            random_weight = .5 * np.random.randint(1, 3, n_features)
+            y_, X_ = y[samples], X[samples] * random_weight
+            coefs[b] = clf.fit(X_, y_).coef_
 
-        coefs = np.array(coefs)
         self.coef_ = coefs.mean(0) / np.maximum(1.e-12, coefs.std(0))
         return self
 
