@@ -7,10 +7,11 @@ Author: Bertrand Thirion, 2015
 """
 
 import numpy as np
-from sklearn.linear_model import Lasso, LassoCV, MultiTaskLassoCV
+from sklearn.linear_model import Lasso, LassoCV, MultiTaskLassoCV, lasso_path
 from sklearn import metrics
 import matplotlib.pyplot as plt
 from joblib import Parallel, delayed
+from sklearn.metrics import precision_recall_fscore_support
 
 
 def SMR(X, y):
@@ -29,6 +30,31 @@ def accuracy_(support, candidate):
     return fpr, tpr
 
 
+def lasso_coefs(X, y):
+    _, coefs, _ = lasso_path(X, y)
+    return coefs.T
+
+
+def precision_recall(true, estimated):
+    """ Compute precision and recall from list of estimators"""
+    precision, recall = [], []
+    p_old, r_old = None, None
+    for estimated_ in estimated:
+        if not estimated_.any():
+            continue
+        p, r, _, _ = precision_recall_fscore_support(
+            true, np.abs(estimated_) > 0, average='micro')
+        if p_old is not None:
+            if  p == p_old and r == r_old:
+                continue
+            precision.append(p)
+            recall.append(r)
+
+        p_old = p
+        r_old = r
+    return precision, recall
+
+
 def accuracy(support, coef):
     return accuracy_(support, np.abs(coef) > 0)
 
@@ -39,12 +65,16 @@ def stability_selection(X, y, n_bootstraps=100, pi=.75):
     alpha = .1 * alpha_max
     stability = np.zeros(n_features)
     for b in range(n_bootstraps):
-        X_ = .5 * X * (1 + np.random.rand(n_features) > 0)
-        mask = np.random.rand(n_samples) > 0
+        X_ = .5 * X * (1 + np.random.rand(n_features) > 0.5)
+        mask = np.random.rand(n_samples) > 0.5
         X_, y_ = X_[mask], y[mask]
         coef = Lasso(alpha=alpha).fit(X_, y_).coef_
         stability += np.abs(coef) > 0
-    return stability > pi * n_bootstraps
+
+    if pi is None:
+        return stability
+    else:
+        return stability > pi * n_bootstraps
 
 
 class BootstrapLasso(Lasso):
@@ -124,15 +154,16 @@ def bootstrap_permutation_testing(X, y, n_bootstraps=100, n_perm=10000,
 # data generation
 n_bootstraps = 100
 n_true = 5
-n_features = 20
-n_voxels = 10
+n_features = 50
+n_voxels = 200
 n_perm = 400
-n_samples = 100
+n_samples = 50
 n_targets = 1
 
 np.random.seed([1])
 X = np.random.randn(n_samples, n_features)
-effects = 1. * np.vstack((np.ones((n_true, n_voxels)),
+X[:, :n_true] = 0.5 * X[:, :n_true] + .5 * np.random.randn(n_samples, 1)
+effects = .3 * np.vstack((np.ones((n_true, n_voxels)),
                           np.zeros((n_features - n_true, n_voxels))))
 support = np.abs(effects) > 0
 noise = np.random.randn(n_samples, n_voxels)
@@ -149,17 +180,81 @@ def compute_scores(X, y):
     score_bpt = (0, 0)
     return np.concatenate((score_smr, score_ss, score_pt, score_bpt))
 
+"""
 scores = Parallel(n_jobs=1)(
     delayed(compute_scores)(X, y) for y in Y.T)
 
-#score_smr, score_ss, score_pt, score_bpt = (
-#    np.array(score_smr), np.array(score_ss), np.array(score_pt),
-#    np.array(score_bpt))
-#scores = np.hstack((score_smr, score_ss, score_pt, score_bpt))
 scores = np.array(scores)
-
-np.savez('scores.npz', scores=scores)
+#  np.savez('scores.npz', scores=scores)
 
 plt.figure(figsize=(5, 4))
 plt.boxplot(scores)
 plt.show()
+"""
+
+
+def precision_recall_samples(X, y):
+    pr_lasso = precision_recall(support.T[-1], lasso_coefs(X, y))
+    stability = stability_selection(X, y, pi=None)
+    estimated = []
+    for st in np.unique(stability):
+        estimated.append(stability > st - 1.e-12)
+    pr_ss = precision_recall(support.T[-1], estimated)
+
+    n_samples, n_features = X.shape
+    alpha_max = np.max(np.dot(y, X)) / n_samples
+    alpha = .1 * alpha_max
+    clf = Lasso(alpha=alpha)
+    abs_coef = np.abs(clf.fit(X, y).coef_)
+    estimated = []
+    for th in np.unique(abs_coef):
+        estimated.append(abs_coef > th - 1.e-12)
+
+    pr_pt = precision_recall(support.T[-1], estimated)
+    clf = BootstrapLasso(alpha=alpha, n_bootstraps=n_bootstraps)
+    abs_coef = np.abs(clf.fit(X, y).coef_)
+    estimated = []
+    for th in np.unique(abs_coef):
+        estimated.append(abs_coef > th - 1.e-12)
+
+    pr_bpt = precision_recall(support.T[-1], estimated)
+    return pr_lasso, pr_ss, pr_pt, pr_bpt
+
+# pr_lasso, pr_ss, pr_pt, pr_bpt = precision_recall_samples(X, Y.T[0])
+prs = Parallel(n_jobs=1)(
+    delayed(precision_recall_samples)(X, y) for y in Y.T)
+
+pr_lasso = (np.concatenate([pr[0][0] for pr in prs]),
+         np.concatenate([pr[0][1] for pr in prs]))
+pr_ss = (np.concatenate([pr[1][0] for pr in prs]),
+         np.concatenate([pr[1][1] for pr in prs]))
+pr_pt = (np.concatenate([pr[2][0] for pr in prs]),
+         np.concatenate([pr[2][1] for pr in prs]))
+pr_bpt = (np.concatenate([pr[3][0] for pr in prs]),
+         np.concatenate([pr[3][1] for pr in prs]))
+
+
+
+
+from sklearn import neighbors
+c_values = np.linspace(.1, 1., 41)
+clf = neighbors.KNeighborsRegressor(200, weights='uniform')
+lasso_curve = clf.fit(
+    pr_lasso[0][:, np.newaxis], pr_lasso[1]).predict(c_values[:, np.newaxis])
+ss_curve = clf.fit(
+    pr_ss[0][:, np.newaxis], pr_ss[1]).predict(c_values[:, np.newaxis])
+pt_curve = clf.fit(
+    pr_pt[0][:, np.newaxis], pr_pt[1]).predict(c_values[:, np.newaxis])
+bpt_curve = clf.fit(
+    pr_bpt[0][:, np.newaxis], pr_bpt[1]).predict(c_values[:, np.newaxis])
+
+
+plt.figure()
+plt.plot(c_values, lasso_curve, linewidth=2, label='Lasso path')
+plt.plot(c_values, ss_curve, linewidth=2, label='Stability selection')
+plt.plot(c_values, pt_curve, linewidth=2, label='Lasso point estimate')
+plt.plot(c_values, bpt_curve, linewidth=2, label='Bootstrapped Lasso')
+plt.legend(loc=1)
+plt.show()
+
+
